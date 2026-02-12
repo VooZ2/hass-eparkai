@@ -1,5 +1,6 @@
 import logging
 from datetime import timedelta, datetime
+import asyncio
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant.components.recorder import get_instance
@@ -8,10 +9,10 @@ from homeassistant.components.recorder.statistics import (
     async_add_external_statistics, statistics_during_period,
 )
 from homeassistant.const import (
-    CONF_ID, CONF_NAME, CONF_USERNAME, CONF_PASSWORD, CONF_CLIENT_ID, UnitOfEnergy, EVENT_HOMEASSISTANT_STARTED
+    CONF_ID, CONF_NAME, CONF_USERNAME, CONF_PASSWORD, CONF_CLIENT_ID, UnitOfEnergy
 )
-from homeassistant.core import HomeAssistant, Event
-from homeassistant.helpers.event import async_track_time_interval, async_track_time_change
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 from .eparkai_client import EParkaiClient
@@ -23,6 +24,9 @@ CONF_POWER_PLANTS = "power_plants"
 CONF_OBJECT_ADDRESS = "object_address"
 CONF_GENERATION_PERCENTAGE = "generation_percentage"
 CONF_STATISTICS_ID_SUFFIX = "statistics_id_suffix"
+
+RETRY_LOGIN_DELAY_SEC = 3 * 3600  # 3 val.
+RETRY_FETCH_DELAY_SEC = 5 * 3600  # 5 val.
 
 POWER_PLANT_SCHEMA = vol.Schema({
     vol.Required(CONF_NAME): cv.string,
@@ -50,18 +54,24 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         password=config[DOMAIN][CONF_PASSWORD],
         client_id=config[DOMAIN][CONF_CLIENT_ID]
     )
-    async def async_import_generation(now: datetime) -> None:
+
+    async def async_import_generation(now: datetime, retry_login=False, retry_fetch=False):
         if hass.is_stopping:
             _LOGGER.debug("HA is stopping, skipping generation import")
             return
         try:
-            _LOGGER.info("Logging in to eParkai.lt (%s)", now)
+            _LOGGER.info(f"Prisijungiama prie eParkai.lt ({now})")
             await hass.async_add_executor_job(client.login)
         except Exception as e:
             _LOGGER.error(f"eParkai login error: {e}")
+            if not retry_login:
+                _LOGGER.warning("Login nepavyko, bandysiu pakartotinai po 3 val.")
+                hass.loop.call_later(RETRY_LOGIN_DELAY_SEC, lambda: asyncio.create_task(async_import_generation(datetime.now(), retry_login=True, retry_fetch=False)))
+            else:
+                _LOGGER.error("Antras login bandymas į eParkai.lt nesėkmingas – lauksiu sekančios dienos.")
             return
         for power_plant in config[DOMAIN][CONF_POWER_PLANTS]:
-            _LOGGER.info("Update requested [%s]", power_plant[CONF_NAME])
+            _LOGGER.info(f"Gauta naujinimo užklausa [{power_plant[CONF_NAME]}]")
             try:
                 await hass.async_add_executor_job(
                     client.fetch_generation_data,
@@ -71,26 +81,29 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 )
             except Exception as e:
                 _LOGGER.error(f"eParkai fetch generation data error [{power_plant[CONF_NAME]}]: {e}")
+                if not retry_fetch:
+                    _LOGGER.warning(f"Power plant {power_plant[CONF_NAME]}: gauti duomenų nepavyko, bandysiu pakartotinai po 5 val.")
+                    hass.loop.call_later(RETRY_FETCH_DELAY_SEC, lambda: asyncio.create_task(async_import_generation(datetime.now(), retry_login=False, retry_fetch=True)))
+                else:
+                    _LOGGER.error(f"Antras duomenų bandymas nepavyko power plant {power_plant[CONF_NAME]} – lauksiu sekančios dienos.")
                 continue
-            _LOGGER.info("Importing statistics [%s]", power_plant[CONF_NAME])
+            _LOGGER.info(f"Importuojama statistika/{power_plant[CONF_NAME]}")
             await async_insert_statistics(
                 hass,
                 power_plant,
                 client.get_generation_data(power_plant[CONF_ID])
             )
             _LOGGER.info(f"Import completed for {power_plant[CONF_NAME]}")
-    async def async_first_start(event: Event) -> None:
-        await async_import_generation(datetime.now())
-    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, async_first_start)
-    # Vykdyk update kasdien 5:21 vietoj kas valandą
-    async_track_time_change(hass, async_import_generation, hour=5, minute=21, second=0)
+
+    # Tik pagal grafiką -- nebevykdyti po restart
+    async_track_time_change(hass, async_import_generation, hour=12, minute=0, second=0)
     return True
 
 async def async_insert_statistics(
     hass: HomeAssistant, power_plant: dict, generation_data: dict
 ) -> None:
     id_suffix = power_plant[CONF_STATISTICS_ID_SUFFIX] if CONF_STATISTICS_ID_SUFFIX in power_plant else ""
-    statistic_id = f"{DOMAIN}:energy_generation_{power_plant[CONF_ID]}_{id_suffix}".strip("_")
+    statistic_id = f"eparkai:energy_generation_{power_plant[CONF_ID]}_{id_suffix}".strip("_")
     _LOGGER.debug(f"Statistic ID for {power_plant[CONF_NAME]} is {statistic_id}")
     if not generation_data:
         _LOGGER.error(f"Received empty generation data for {statistic_id}")
@@ -99,7 +112,6 @@ async def async_insert_statistics(
     metadata = StatisticMetaData(
         has_mean=False,
         has_sum=True,
-        mean_type=None,
         name=power_plant[CONF_NAME],
         source=DOMAIN,
         statistic_id=statistic_id,
@@ -115,32 +127,18 @@ async def _async_get_statistics(hass: HomeAssistant, metadata: StatisticMetaData
     statistics: list[StatisticData] = []
     generation_percentage = power_plant[CONF_GENERATION_PERCENTAGE]
     sum_ = None
-    tz = dt_util.get_time_zone("Europe/Vilnius")
-
-    # IMPORTANT: sort by timestamp to keep the cumulative sum correct.
-    for ts in sorted(generation_data):
-        generated_kwh = generation_data[ts]
-        dt_object = datetime.fromtimestamp(ts, tz=tz)
-
+    for ts, generated_kwh in generation_data.items():
+        dt_object = datetime.fromtimestamp(ts)
         if generation_percentage != 100:
             generated_percentage_kwh = generated_kwh * (generation_percentage / 100)
-            _LOGGER.debug(
-                "Applying generation percentage of %s%% for %s: %s kWh -> %s kWh",
-                generation_percentage,
-                statistic_id,
-                generated_kwh,
-                generated_percentage_kwh,
-            )
+            _LOGGER.debug(f"Applying generation percentage of {generation_percentage}% for {statistic_id}: {generated_kwh} kWh -> {generated_percentage_kwh} kWh")
             generated_kwh = generated_percentage_kwh
-
         if sum_ is None:
             sum_ = await get_yesterday_sum(hass, metadata, dt_object)
-
         sum_ += generated_kwh
-
         statistics.append(
             StatisticData(
-                start=dt_object,
+                start=dt_object.replace(tzinfo=dt_util.get_time_zone("Europe/Vilnius")),
                 state=generated_kwh,
                 sum=sum_,
             )
