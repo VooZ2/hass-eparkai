@@ -1,3 +1,15 @@
+## SKIRTUMAI nuo originalaus [algirdasc/hass-eparkai](https://github.com/algirdasc/hass-eparkai)
+
+**Pagrindiniai šio fork'o patobulinimai:**
+
+- **Duomenys iš eParkai.lt dabar traukiami tik kartą per dieną, 12:00 dienos.**  
+  Nesiunčiamos užklausos po Home Assistant restarto! 
+- **Jei nepavyksta prisijungti prie eParkai.lt (login klaida):**  
+  automatiškai bandys tik vieną kartą po 3 val. (login retry).
+- **Jei duomenų tuo metu dar nėra (generacija tuščia):**  
+  automatiškai bandys dar kartą po 5 val. (fetch retry), taip pat tik vieną kartą per dieną.
+- **Daug aiškesnis log'as – kodėl/dėl ko retry, kada bus kitas bandymas, kada laukiama kitos dienos.**
+
 # Your support
 This open-source project is developed in my free time. 
 Your donation would help me dedicate more time and resources to improve project, add new features, fix bugs, 
