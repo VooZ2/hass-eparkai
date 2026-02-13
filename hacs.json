@@ -1,7 +1,7 @@
 {
-  "name": "eParkai.lt Energy Statistics Import",
-  "content_in_root": false,
-  "domains": [],
+  "name": "eParkai.lt Solar Energy",
+  "iot_class": "cloud_polling",
+  "render_readme": true,
   "homeassistant": "2023.6.2",
-  "render_readme": true
+  "domains": ["eparkai"]
 }

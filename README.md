@@ -2,13 +2,12 @@
 
 **Pagrindiniai šio fork'o patobulinimai:**
 
-- **Duomenys iš eParkai.lt dabar traukiami tik kartą per dieną, 12:00 dienos.**  
-  Nesiunčiamos užklausos po Home Assistant restarto! 
-- **Jei nepavyksta prisijungti prie eParkai.lt (login klaida):**  
-  automatiškai bandys tik vieną kartą po 3 val. (login retry).
-- **Jei duomenų tuo metu dar nėra (generacija tuščia):**  
-  automatiškai bandys dar kartą po 5 val. (fetch retry), taip pat tik vieną kartą per dieną.
-- **Daug aiškesnis log'as – kodėl/dėl ko retry, kada bus kitas bandymas, kada laukiama kitos dienos.**
+* **Išmanus grafikas:** Duomenys automatiškai traukiami **10:00 val. ryto**. Tai optimalus laikas, kai eParkai.lt sistemoje dažniausiai jau būna suformuoti galutiniai praėjusios paros duomenys.
+* **Patikima klaidų valdymo sistema:**
+    * **Retry logika:** Nepavykus prisijungti ar gauti tuščių duomenų, sistema automatiškai bandys **3 kartus kas 3 valandas**.
+    * **Aiški komunikacija:** Log'uose matysite tikslias priežastis, kodėl importas nepavyko, kelintas tai bandymas ir kada numatytas kitas sinchronizavimas.
+* **Duomenų bazės stabilumas:** Naudojami modernūs metaduomenys (`StatisticMeanType.NONE`), kurie apsaugo nuo "Invalid mean type" klaidų ir užtikrina tvarkingą „Energy Dashboard“ grafiką.
+* **Importas po restarto:** Integracija automatiškai atlieka importą praėjus **60 sekundžių** po Home Assistant starto, tad nereikia laukti kito suplanuoto ciklo.
 
 # Your support
 This open-source project is developed in my free time. 

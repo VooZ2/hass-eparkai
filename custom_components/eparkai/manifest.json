@@ -1,10 +1,10 @@
 {
   "domain": "eparkai",
   "name": "eParkai.lt Solar Energy",
-  "documentation": "https://github.com/algirdasc/hass-eparkai",
-  "dependencies": [],
-  "codeowners": ["@algirdasc"],
-  "issue_tracker": "https://github.com/algirdasc/hass-eparkai/issues",
-  "requirements": ["requests"],
-  "version": "1.0.2"
+  "documentation": "https://github.com/VooZ2/hass-eparkai",
+  "dependencies": ["recorder"],
+  "codeowners": ["@VooZ2"],
+  "requirements": ["requests>=2.31.0"],
+  "version": "1.1.0",
+  "iot_class": "cloud_polling"
 }
