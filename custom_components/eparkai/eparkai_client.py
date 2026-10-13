@@ -83,10 +83,8 @@ class EParkaiClient:
             return {}
 
     def fetch_generation_data(self, power_plant_id: str, object_address: str, date: datetime) -> dict | None:
-        if power_plant_id in self.generation and self.generation[power_plant_id]:
-            return self.generation[power_plant_id]
-
-        self.generation[power_plant_id] = {}
+        # Kelių savaičių duomenys sujungiami (login() išvalo prieš kiekvieną importą)
+        self.generation.setdefault(power_plant_id, {})
         data = self.fetch(power_plant_id, object_address, date)
 
         for d in data:

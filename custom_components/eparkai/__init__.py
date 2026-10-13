@@ -72,12 +72,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             
             for power_plant in config[DOMAIN][CONF_POWER_PLANTS]:
                 _LOGGER.info(f"eParkai: Siunčiami duomenys [{power_plant[CONF_NAME]}]")
-                await hass.async_add_executor_job(
-                    client.fetch_generation_data,
-                    power_plant[CONF_ID],
-                    power_plant[CONF_OBJECT_ADDRESS],
-                    now
-                )
+                # Ir praėjusi savaitė: kitaip dienos, praleistos per savaitės
+                # sandūrą ar HA/serverio neveikimą, niekada nebeatsisiunčiamos.
+                for days_back in (7, 0):
+                    await hass.async_add_executor_job(
+                        client.fetch_generation_data,
+                        power_plant[CONF_ID],
+                        power_plant[CONF_OBJECT_ADDRESS],
+                        now - timedelta(days=days_back)
+                    )
                 
                 await async_insert_statistics(
                     hass,
@@ -133,7 +136,7 @@ async def _async_get_statistics(hass: HomeAssistant, statistic_id: str, power_pl
     generation_percentage = power_plant[CONF_GENERATION_PERCENTAGE]
     sum_ = None
 
-    for ts, generated_kwh in generation_data.items():
+    for ts, generated_kwh in sorted(generation_data.items()):
         dt_object = datetime.fromtimestamp(ts, tz=dt_util.get_time_zone("Europe/Vilnius"))
         
         if generation_percentage != 100:
@@ -146,12 +149,25 @@ async def _async_get_statistics(hass: HomeAssistant, statistic_id: str, power_pl
         statistics.append(StatisticData(start=dt_object, state=generated_kwh, sum=sum_))
     return statistics
 
+def _row_start_ts(start) -> float:
+    return start.timestamp() if isinstance(start, datetime) else float(start)
+
+
 async def get_previous_sum(hass: HomeAssistant, statistic_id: str, date: datetime) -> float:
-    start = date - timedelta(days=2) # Ieškome giliau, jei eParkai vėluoja
-    end = date
-    stat = await get_instance(hass).async_add_executor_job(
-        statistics_during_period, hass, start, end, {statistic_id}, "day", None, {"sum"}
-    )
-    if statistic_id not in stat or not stat[statistic_id]:
-        return 0.0
-    return stat[statistic_id][-1].get("sum", 0.0)
+    # Suma paskutinės valandos griežtai PRIEŠ pirmą importuojamą valandą.
+    # Anksčiau naudotas "day" periodas grąžindavo ir pačios importo pradžios dienos
+    # sumą, todėl tos dienos gamyba būdavo pridėta antrą kartą (šuolis 00:00 valandą).
+    limit_ts = date.timestamp()
+    for lookback, period in ((timedelta(days=31), "hour"), (timedelta(days=1100), "month")):
+        stat = await get_instance(hass).async_add_executor_job(
+            statistics_during_period, hass, date - lookback, date, {statistic_id}, period, None, {"sum"}
+        )
+        rows = stat.get(statistic_id) or []
+        if period == "hour":
+            rows = [r for r in rows if _row_start_ts(r["start"]) < limit_ts]
+        else:
+            # Mėnesio eilutę imame tik jei visas mėnuo baigėsi iki importo pradžios
+            rows = [r for r in rows if _row_start_ts(r["end"]) <= limit_ts]
+        if rows:
+            return rows[-1].get("sum") or 0.0
+    return 0.0
